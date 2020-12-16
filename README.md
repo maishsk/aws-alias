@@ -10,12 +10,12 @@ Essentially - you create an `alias` file in `.aws/cli/alias` and you populate it
 
 Based on the information from the [PR](https://github.com/aws/aws-cli/pull/2287) the `alias` file is an `INI` file, and you define the aliases and their values inside.
 
-- The ~/.aws/cli/alias file only has support for the `[toplevel]` section. Any other sections, will be ignored.
+- The `~/.aws/cli/alias` file only has support for the `[toplevel]` section. Any other sections, will be ignored.
 - Aliases defined under the `[toplevel]` section will only be applied at the service command level.
-- Aliases can defined using multiple lines for readability
+- Aliases can defined using multiple lines for readability.
 
 
-You can find more information on the following [blog post](https://blog.technodrone.cloud/2020/12/aws-cli-aliases.html)
+You can find more information on the following [blog post](https://blog.technodrone.cloud/2020/12/aws-cli-aliases.html).
 
 ## Simple alias
 
@@ -33,6 +33,6 @@ Your alias can also contain a function - which is essentially a wrapper for a sh
 
 ```
   !f() {
-    <_ Enter some shell command here _>
+    <_Enter some shell command here_>
   }; f
 ```
