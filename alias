@@ -1,0 +1,432 @@
+[toplevel] 
+
+###############
+### GENERAL ###
+###############
+
+tostring =
+  !f() {
+    jp -f "${1}" 'to_string(@)'
+  }; f
+
+tostring-with-jq =
+  !f() {
+    cat "${1}" | jq 'tostring'
+  }; f
+
+# List or set your region
+region = 
+  !f() { 
+    [[ $# -eq 1 ]] && aws configure set region "$1" || aws configure get region; 
+  }; f
+
+upgrade = 
+  !f() {
+    curl -s "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "/tmp/AWSCLIV2.pkg"
+    sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+    rm -f /tmp/AWSCLIV2.pkg
+  }; f
+
+check-upgrade = 
+  !f() { 
+    rm -f /tmp/AWSCLIV2.pkg
+    latest_cli_version=$(curl -s "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o - | \
+    tar xOv - 2>/dev/null | \
+    grep -a '<pkg-info' | \
+    sed "s#.* version=\"\([0-9\.]*\)\".*#\1#")
+    release_date=$(curl -sI "https://awscli.amazonaws.com/AWSCLIV2.pkg" | \
+        grep 'Last-Modified' | cut -d':' -f 2- | tr '\r\n' ' ')
+    echo "Current version: $(aws --version | cut -d' ' -f 1)"
+    echo "    New version: aws-cli/${latest_cli_version} (${release_date})"
+  }; f
+
+install-version = 
+  !f() {
+    curl -s "https://awscli.amazonaws.com/AWSCLIV2-$1.pkg" -o "/tmp/AWSCLIV2.pkg"
+    sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+    rm -f /tmp/AWSCLIV2.pkg
+  }; f
+
+## Shortcuts
+ag = apigateway
+as = autoscaling
+cfn = cloudformation
+cp = codepipeline
+ddb = dynamodb
+eb = elasticbeanstalk
+ec = elasticache
+sc = servicecatalog 
+sg = security-group
+
+###########
+### IAM ###
+###########
+
+whoami = sts get-caller-identity
+
+create-assume-role =
+  !f() {
+    aws iam create-role --role-name "${1}" \
+      --assume-role-policy-document \
+        "{\"Statement\":[{\
+            \"Action\":\"sts:AssumeRole\",\
+            \"Effect\":\"Allow\",\
+            \"Principal\":{\"Service\":\""${2}".amazonaws.com\"},\
+            \"Sid\":\"\"\
+          }],\
+          \"Version\":\"2012-10-17\"\
+        }";
+  }; f
+
+find-access-key = 
+  !f() {
+    clear_to_eol=$(tput el)
+    for i in $(aws iam list-users --query "Users[].UserName" --output text); do
+      printf "\r%sSearching...$i" "${clear_to_eol}"
+      result=$(aws iam list-access-keys --output text --user-name "${i}" --query "AccessKeyMetadata[?AccessKeyId=='${1}'].UserName";)
+      if [ -n "${result}" ]; then
+         printf "\r%s%s is owned by %s.\n" "${lear_to_eol}" "$1" "${result}"
+         break
+      fi
+    done
+    if [ -z "${result}" ]; then
+      printf "\r%sKey not found." "${clear_to_eol}"
+    fi
+  }; f
+
+list-iam-users = iam list-users --query "Users[].UserName" --output table
+
+list-user-keys = 
+  !f() {
+    aws iam list-access-keys --output text --user-name "$1" --query "AccessKeyMetadata[].AccessKeyId"; 
+  }; f 
+
+clear-virtual-mfa = 
+  !f() {
+    account_id=$(aws sts get-caller-identity --output json | jq -r '.Account')
+    aws iam delete-virtual-mfa-device--serial-number "arn:aws:iam::${account_id}:mfa/$1"
+  }; f 
+
+find-users-without-mfa =
+  !f() {
+    echo "Users withouth MFA enabled:"
+    for i in $(aws iam list-users --query "Users[?PasswordLastUsed].UserName" --output text); do
+      result=$(aws iam list-virtual-mfa-devices --query "length(VirtualMFADevices[?User.UserName=='${i}'])")
+      if [ "${result}" -eq "0" ]; then
+        echo "${i}"
+      fi
+    done
+  }; f
+
+generate-sts-token =
+  !f() {
+    user_arn=$(aws whoami | jq -r .Arn)
+    duration=${1:-3600}
+    session_data=$(aws sts get-session-token --duration-seconds $duration)
+    echo "# temporary credentials on user ${user_arn} for $duration seconds (expires on $(echo $session_data | jq -r .Credentials.Expiration))"
+    echo "export AWS_DEFAULT_REGION=$(aws configure get region)"
+    echo "export AWS_ACCESS_KEY_ID=$(echo $session_data | jq -r .Credentials.AccessKeyId)"
+    echo "export AWS_SECRET_ACCESS_KEY=$(echo $session_data | jq -r .Credentials.SecretAccessKey)"
+    echo "export AWS_SESSION_TOKEN=$(echo $session_data | jq -r .Credentials.SessionToken)"
+    echo "export AWS_SECURITY_TOKEN=$(echo $session_data | jq -r .Credentials.SessionToken)"
+  }; f
+
+assume =
+  !f() {
+    res=$(aws sts assume-role --role-arn ${1} --role-session-name session)
+    if echo $res | grep -q AccessKeyId; then
+        echo $res \
+        | jq -r '
+        "","[\(.Credentials.AccessKeyId)]",
+        "aws_access_key_id     = \(.Credentials.AccessKeyId)",
+        "aws_secret_access_key = \(.Credentials.SecretAccessKey)",
+        "aws_session_token     = \(.Credentials.SessionToken)",
+        "aws_security_token    = \(.Credentials.SessionToken)"
+        ' \
+        >> ~/.aws/credentials
+        echo $res | jq -r '"AWS_PROFILE=\(.Credentials.AccessKeyId)"'
+    fi
+  }; f
+
+###########
+### EC2 ###
+###########
+
+running-instances = ec2 describe-instances \
+    --filter Name=instance-state-name,Values=running \
+    --output table \
+    --query 'Reservations[].Instances[].{ID: InstanceId,Hostname: PublicDnsName,Name: Tags[?Key==`Name`].Value | [0],Type: InstanceType, Platform: Platform || `Linux`}'
+
+ebs-volumes= ec2 describe-volumes \
+    --query 'Volumes[].{VolumeId: VolumeId,State: State,Size: Size,Name: Tags[0].Value,AZ: AvailabilityZone}' \
+    --output table
+
+amazon-linux-amis = ec2 describe-images \
+    --filter \
+      Name=owner-alias,Values=amazon \
+      Name=name,Values="amzn-ami-hvm-*" \
+      Name=architecture,Values=x86_64 \
+      Name=virtualization-type,Values=hvm \
+      Name=root-device-type,Values=ebs \
+      Name=block-device-mapping.volume-type,Values=gp2 \
+    --query "reverse(sort_by(Images, &CreationDate))[*].[ImageId,Name,Description]" \
+    --output text
+
+list-sgs = ec2 describe-security-groups --query "SecurityGroups[].[GroupId, GroupName]" --output text
+
+sg-rules = 
+  !f() { 
+    aws ec2 describe-security-groups \
+    --query "SecurityGroups[].IpPermissions[].[FromPort,ToPort,IpProtocol,join(',',IpRanges[].CidrIp)]" \
+    --group-id "$1" --output text; 
+  }; f
+
+get-group-id =
+  !f() {
+    aws ec2 describe-security-groups --filters Name=group-name,Values=${1} --query SecurityGroups[0].GroupId --output text
+  }; f
+
+authorize-my-ip-by-name =
+  !f() {
+    group_id=$(aws get-group-id "${1}")
+    aws authorize-my-ip "$group_id"
+  }; f
+
+# list all security group port ranges open to 0.0.0.0/0
+public-ports = ec2 describe-security-groups \
+  --filters Name=ip-permission.cidr,Values=0.0.0.0/0 \
+  --query 'SecurityGroups[].{
+    GroupName:GroupName,
+    GroupId:GroupId,
+    PortRanges:
+      IpPermissions[?contains(IpRanges[].CidrIp, `0.0.0.0/0`)].[
+        join(`:`, [IpProtocol, join(`-`, [to_string(FromPort), to_string(ToPort)])])
+      ][]
+  }'
+
+myip =
+  !f() {
+    curl https://checkip.amazonaws.com
+  }; f
+
+allow-my-ip =
+  !f() {
+    my_ip=$(aws myip)
+    aws ec2 authorize-security-group-ingress --group-name ${1} --protocol ${2} --port ${3} --cidr $my_ip/32
+  }; f
+
+revoke-my-ip =
+  !f() {
+    my_ip=$(aws myip)
+    aws ec2 revoke-security-group-ingress --group-name ${1} --protocol ${2} --port ${3} --cidr $my_ip/32
+  }; f
+
+allow-my-ip-all =
+  !f() {
+    aws allow-my-ip ${1} all all
+  }; f
+
+revoke-my-ip-all =
+  !f() {
+    aws revoke-my-ip ${1} all all
+  }; f
+
+delete-ami = 
+  !f() {
+    snapshots=($(aws ec2 describe-images --image-ids $1 --query "Images[].BlockDeviceMappings[].Ebs.SnapshotId" --output text))
+    aws ec2 deregister-image --image-id $1
+    for id in $snapshots
+    do
+      aws ec2 delete-snapshot --snapshot-id ${id}
+    done
+  }; f 
+
+list-instances =
+  !f() {
+    echo "Filtering by \`$1\`"
+    for region in $(aws ec2 describe-regions --query "Regions[*].RegionName" --output text | tr "\t" "\n" | grep "$1")
+      do
+        echo "\nListing Instances in region:'$region'..."
+        aws ec2 describe-instances --region $region \
+        --output table \
+        --query "Reservations[*].Instances[*].{
+                Instance:InstanceId,
+                Type:InstanceType,
+                AZ:Placement.AvailabilityZone,
+                KeyName:KeyName,
+                Name:Tags[?Key==\`Name\`]|[0].Value,
+                Project:Tags[?Key==\`project\`]|[0].Value,
+                IP:PublicIpAddress,
+                State:State.Name,
+                CPUcores:CpuOptions.CoreCount,
+                CPUThreads:CpuOptions.ThreadsPerCore
+        }"
+      done
+  }; f 
+
+connect-ssh =
+  !f() {
+    instance_output=$(aws ec2 describe-instances \
+                        --instance-ids "${1}" \
+                        --query Reservations[0].Instances[0])
+    ssh_key_file=$(jp -u KeyName <<< "$instance_output")".pem"
+    public_ip=$(jp -u PublicIpAddress <<< "$instance_output")
+    if ! [ -f "$ssh_key_file" ];
+    then
+      echo "Error: Could not locate SSH key: "$ssh_key_file" in current" \
+           "working direcory"
+      exit 1
+    fi
+    if [ "$public_ip" == "null" ];
+    then
+      echo "EC2 Instance: "${1}" does not have a public IP address." \
+           "Unable to connect with SSH."
+      exit 1
+    fi
+    ssh -i "$ssh_key_file" ec2-user@"$public_ip"
+  }; f
+
+search-instances =
+  !f() {
+    aws ec2 describe-instances \
+    --filters Name=instance-state-name,Values=running,stopped \
+    --query "Reservations[].Instances[].{Name: (Tags[?Key==\`Name\`].Value)[0],
+                                        Id: InstanceId,
+                                        PrivateIpAddress: PrivateIpAddress,
+                                        GroupId: SecurityGroups[].GroupId|join(\`,\`,@)}[?contains(Name,\`"${1}"\`)]" \
+    --out table
+  }; f
+
+list-all-regions =
+  !f() {
+    aws ec2 describe-regions --query "Regions[].RegionName" --output text
+  }; f 
+
+list-azs = 
+  !f() { 
+    aws ec2 describe-availability-zones --region $1 --query AvailabilityZones[].ZoneName --output text; 
+  }; f
+
+vpc-peers =
+  !f() {
+    aws ec2 describe-vpc-peering-connections \
+    --query 'VpcPeeringConnections[].Tags[?Key==`Name`].Value' --output text | xargs -n1 | sort -d
+  }; f
+
+find-instances-in-sg =
+  !f() {
+    filter=${2:-Name}
+    for i in $(aws ec2 describe-instances --filters "Name=network-interface.group-id,Values=['${1}']" --query "Reservations[].Instances[].Tags[?Key == '${filter}'].Value[]" --output text)
+    do
+      echo ${i}
+    done
+  }; f
+
+find-ssh-open = ec2 describe-security-groups \
+  --filters Name=ip-permission.from-port,Values=22 \
+  --query "SecurityGroups[].{
+    GroupName: GroupName,
+    GroupId: GroupId,
+    IPs: IpPermissions[?to_string(FromPort) == '22'][IpRanges[].CidrIp][][]
+  }"
+
+get-asg-instance-ips =
+  !f() {
+    asg_name=${1}
+    aws ec2 describe-instances --filters "Name=tag:aws:autoscaling:groupName,Values=${asg_name}" | jq -r '.Reservations[].Instances[].PrivateIpAddress'
+  }; f
+
+find-host-by-instance-id =
+  !f() {
+    instance_id=${1}
+    aws ec2 describe-instances --filters "Name=instance-id,Values=${instance_id}" | jq -r '.Reservations[].Instances[].PrivateIpAddress' | sed -E 's/\./-/g; s/^/ip-/'
+  }; f
+
+find-instance-by-public-ip =
+  !f() {
+    aws ec2 describe-instances --filters "Name=ip-address,Values=$1" | jq -r '.Reservations[].Instances[].Tags[] | select(.Key == "Name").Value'
+  }; f
+
+find-nat-gateway-by-public-ip =
+  !f() {
+    aws ec2 describe-nat-gateways | jq -r '.NatGateways[] | select(.NatGatewayAddresses[].PublicIp == "'$1'") | .Tags[] | select(.Key == "Name").Value'
+  }; f 
+
+list-igw = ec2 describe-internet-gateways \
+    --query "InternetGateways[].{IGW:InternetGatewayId,VpcId: Attachments[].VpcId|[0], Name: Tags[?Key=='Name'].Value |[0] }"  \
+    --output table
+
+list-ngw = ec2 describe-nat-gateways \
+    --query "NatGateways[].{VpcId:VpcId, NatGatewayId: NatGatewayId, SubnetId: SubnetId, PublicIp: NatGatewayAddresses[].PublicIp | [0], PrivateIp: NatGatewayAddresses[].PrivateIp | [0] }" \
+    --output table
+
+list-vgw = ec2 describe-vpn-gateways \
+    --query "VpnGateways[].{VpnGatewayId: VpnGatewayId, AmazonSideAsn: AmazonSideAsn, VpcId: VpcAttachments.VpcId,Name: Tags[?Key=='Name'].Value| [0] }" \
+    --output table
+
+list-vpn-connection = ec2 describe-vpn-connections \
+    --query "VpnConnections[].{ VpnConnectionId: VpnConnectionId, CustomerGatewayId:CustomerGatewayId,VpnGatewayId:VpnGatewayId, Name: Tags[?Key=='Name'].Value| [0] }" \
+    --output table
+
+list-instance-status = ec2 describe-instance-status \
+    --query "InstanceStatuses[].{InstanceId: InstanceId, State: InstanceState.Name, AZ: AvailabilityZone, SystemStatus: SystemStatus.Status, InstanceStatus: InstanceStatus.Status}" \
+    --output table
+
+list-vpcs = ec2 describe-vpcs \
+      --query \
+        "Vpcs[].{VpcId: VpcId, CidrBlock: CidrBlock,  Name: Tags[?Key=='Name'].Value| [0], IsDefault: IsDefault}" \
+      --output table 
+
+list-subnets = ec2 describe-subnets \
+    --query "Subnets[].{AZ:AvailabilityZone,VpcId:VpcId,SubnetId:SubnetId,CidrBlock:CidrBlock,    Name: Tags[?Key=='Name'].Value| [0]}" \
+    --output table 
+
+list-routes = ec2 describe-route-tables \
+  --query "RouteTables[].{RouteTableId:RouteTableId, VpcId:VpcId, Name: Tags[?Key=='Name'].Value| [0], GatewayId: Routes[].{GatewayId:GatewayId,DestinationCidrBlock: DestinationCidrBlock} }  " \
+  --output table 
+
+get-dns-from-instance-id =
+  !f() {
+    aws ec2 describe-instances \
+    --instance-ids "${1}" \
+    --query 'Reservations[*].Instances[*][PublicDnsName,InstanceId]' --output text | cut -f1
+  }; f
+
+get-instance-id-from-dns =
+  !f() {
+    aws ec2 describe-instances \
+    --filters "Name=dns-name,Values=${1}" \
+    --query 'Reservations[*].Instances[*][InstanceId,PublicDnsName]' --output text | cut -f1
+  }; f 
+
+################
+## Cloudwatch ##
+################
+
+last-log =
+  !f() {
+    group="$1"
+
+    if ! stream="$(aws logs describe-log-streams --log-group-name "$group" \
+    --max-items 1 --order-by LastEventTime --descending \
+    --query "logStreams[0].logStreamName" --output "text")"; then
+        return 1
+    fi
+
+    stream="${stream%[[:space:]]None}"
+
+    aws logs get-log-events --log-group-name "$group" --log-stream-name "$stream" \
+    --query "events[].message" --output "text"
+  }; f 
+
+##########
+## ECR ###
+##########
+
+docker-ecr-login =
+  !f() {
+    region=$(aws configure get region)
+    endpoint=$(aws ecr get-authorization-token --region $region --output text --query authorizationData[].proxyEndpoint)
+    passwd=$(aws ecr get-authorization-token --region $region --output text --query authorizationData[].authorizationToken | base64 --decode | cut -d: -f2)
+    docker login -u AWS -p $passwd $endpoint
+  }; f
