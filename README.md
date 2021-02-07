@@ -14,7 +14,7 @@ Based on the information from the [PR](https://github.com/aws/aws-cli/pull/2287)
 - Aliases defined under the `[toplevel]` section will only be applied at the service command level.
 - Aliases can defined using multiple lines for readability.
 
-You can find more information on the following [blog post](https://blog.technodrone.cloud/2020/12/aws-cli-aliases.html).
+You can find more information on the following [blog post](https://blog.technodrone.cloud/2021/02/aws-cli-aliases.html).
 
 The file has been divided into sections based on the types of commands that are involved with the aliases.
 
