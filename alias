@@ -430,3 +430,18 @@ docker-ecr-login =
     passwd=$(aws ecr get-authorization-token --region $region --output text --query authorizationData[].authorizationToken | base64 --decode | cut -d: -f2)
     docker login -u AWS -p $passwd $endpoint
   }; f
+
+
+#########
+## ECS ##
+#########
+
+ecs-exec =
+  !f() {
+    aws ecs execute-command \
+    --cluster ${1} \
+    --task ${2} \
+    --container ${3} \
+    --command "/bin/sh" \
+    --interactive
+  }; f
