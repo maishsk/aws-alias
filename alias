@@ -438,10 +438,101 @@ docker-ecr-login =
 
 ecs-exec =
   !f() {
-    aws ecs execute-command \
-    --cluster ${1} \
-    --task ${2} \
-    --container ${3} \
-    --command "/bin/sh" \
-    --interactive
+##########################
+## This script takes inputs
+## from CLI or Env Variables
+## to connect via ECS Exec
+## to containers.
+##
+## By: Shlomo Dubrowin
+## Date: Mar 18, 2021
+##########################
+
+##########################
+## Variables
+##########################
+COMMAND="/bin/bash"
+
+##########################
+## Functions
+##########################
+
+function Debug {
+        if [ "$DEBUG" == "Y" ]; then
+        	echo -e "$( date +"%b %d %H:%M:%S" ) $1" 
+               	logger -t $( basename "$0") "$$ $1"
+        else
+               	logger -t $( basename "$0") "$$ $1"
+        fi
+}
+
+function Help {
+	echo -e "\n\tUsage: $(basename $0) (Either Environment variables for \$CLUSTER \$TASK \$CONTAINER need to be set, or they need to be provided as: \n\t< -C | --cluster > \n\t< -t | --task > \n\t< -c | --container >\n\t< -com | --command [command, default: /bin/bash] >]\n\n\t< -d | --debug > \n\t< -h | --help >"
+	exit 1
+}
+
+##########################
+## CLI Options
+##########################
+if [ -z != "$1" ]; then
+        while [ "$1" != "" ]; do
+        case $1 in
+	-d | --debug )
+		DEBUG="Y"
+		Debug "Turning on Debug"
+		;;
+	-C | --cluster )
+		shift
+		CLUSTER="$1"
+		;;
+	-t | --task )
+		shift
+		TASK="$1"
+		;;
+	-c | --container )
+		shift
+		CONTAINER="$1"
+		;;
+	-com | --command )
+		shift
+		COMMAND="$1"
+		;;
+	* )
+		Help
+		;;
+	esac
+	shift
+	done
+fi
+
+if [ -z $CLUSTER ] || [ -z $TASK ] || [ -z $CONTAINER ]; then
+	echo -e "\nERROR: We are missing something"
+	if [ -z $CLUSTER ]; then
+		echo -e "\t** Cluster Not Set"
+	fi
+	if [ -z $TASK ]; then
+		echo -e "\t** Task Not Set"
+	fi
+	if [ -z $CONTAINER ]; then
+		echo -e "\t** Container Not Set"
+	fi
+	Help
+fi
+
+##########################
+## Main Code
+##########################
+Debug "Executing: 
+aws ecs execute-command \
+--cluster $CLUSTER \
+--task $TASK \
+--container $CONTAINER \
+--command "${COMMAND}" \
+--interactive"
+aws ecs execute-command \
+--cluster $CLUSTER \
+--task $TASK \
+--container $CONTAINER \
+--command "${COMMAND}" \
+--interactive
   }; f
